@@ -10,12 +10,8 @@ interface Props {
   setSimplifyTol: (v: number) => void
   seedlingId: number | null
   setSeedlingId: (n: number | null) => void
-  labelOpacity: number
-  setLabelOpacity: (v: number) => void
   minVisible: boolean
   setMinVisible: (v: boolean) => void
-  hasBase: boolean
-  hasLabel: boolean
   canUndo: boolean
   canRedo: boolean
   canExport: boolean
@@ -24,8 +20,6 @@ interface Props {
   onZoom: (factor: number) => void
   onFit: () => void
   onActualSize: () => void
-  onPickBase: (f: File) => void
-  onPickLabel: (f: File) => void
   onImportGt: (f: File) => void
   onExport: () => void
 }
@@ -59,28 +53,13 @@ export default function Toolbar(p: Props) {
   return (
     <div className="toolbar">
       <section>
-        <h3>Arquivos</h3>
+        <h3>Ground truth (JSON)</h3>
         <div className="row wrap">
-          <FilePick label="Imagem original" accept="image/*" onPick={p.onPickBase} />
-          <FilePick label="Máscara (label)" accept="image/*" onPick={p.onPickLabel} />
           <FilePick label="Importar GT" accept="application/json,.json" onPick={p.onImportGt} />
           <button disabled={!p.canExport} onClick={p.onExport}>
             Exportar GT
           </button>
         </div>
-        {p.hasBase && p.hasLabel && (
-          <label className="row">
-            <span>Opacidade da máscara</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={p.labelOpacity}
-              onChange={(e) => p.setLabelOpacity(Number(e.target.value))}
-            />
-          </label>
-        )}
       </section>
 
       <section>

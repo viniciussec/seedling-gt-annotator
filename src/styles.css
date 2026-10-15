@@ -127,3 +127,25 @@ img
 
 .raster, .overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
 .overlay { pointer-events: none; overflow: hidden; }
+
+/* Camadas */
+.layers-head { display: flex; align-items: center; justify-content: space-between; }
+.layers-head h3 { margin: 14px 0 6px; }
+.layer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.layer-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 6px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid transparent; font-size: 12.5px;
+}
+.layer-row.hidden .thumb, .layer-row.hidden .meta { opacity: .4; }
+.layer-row.drop { border-color: var(--accent); }
+.strokes-row { background: transparent; border: 1px dashed var(--border); color: var(--muted); }
+.handle { cursor: grab; color: var(--muted); user-select: none; letter-spacing: -2px; padding: 0 2px; }
+.thumb { width: 30px; height: 30px; object-fit: cover; border-radius: 4px; background: #000; flex: none; }
+.layer-row .meta { min-width: 0; }
+.layer-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { margin-left: 6px; font-size: 10px; background: var(--accent); color: #fff; border-radius: 3px; padding: 0 4px; }
+.opacity { display: flex; align-items: center; gap: 6px; }
+.opacity input { flex: 1; min-width: 40px; }
+.opacity small { color: var(--muted); width: 32px; text-align: right; }
+.layer-row .actions { display: flex; gap: 2px; flex: none; }

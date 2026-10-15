@@ -1,17 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react'
-import type { ImageMeta, Organ, Point, Stroke, Tool } from '../types'
+import type { ImageMeta, Layer, Organ, Point, Stroke, Tool } from '../types'
 import { organColor } from '../types'
 import type { Viewport } from '../hooks/useViewport'
 import { clamp, dist, polylineLength, simplifyRdp } from '../lib/geometry'
-import { useImage } from '../hooks/useImage'
 
 interface Props {
   containerRef: RefObject<HTMLDivElement>
   meta: ImageMeta | null
-  baseUrl: string | null
-  labelUrl: string | null
-  labelOpacity: number
+  layers: Layer[]
+  showStrokes: boolean
   vp: Viewport
   zoomAt: (cx: number, cy: number, factor: number) => void
   panBy: (dx: number, dy: number) => void
@@ -62,8 +60,6 @@ export default function Viewer(p: Props) {
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
-  const baseImg = useImage(p.baseUrl)
-  const labelImg = useImage(p.labelUrl)
 
   const panRef = useRef<{ x: number; y: number } | null>(null)
   const clickRef = useRef<{ x: number; y: number } | null>(null)
@@ -100,13 +96,14 @@ export default function Viewer(p: Props) {
     ctx.imageSmoothingQuality = 'high'
     const dw = meta.width * vp.scale
     const dh = meta.height * vp.scale
-    if (baseImg) ctx.drawImage(baseImg, vp.tx, vp.ty, dw, dh)
-    if (labelImg) {
-      ctx.globalAlpha = baseImg ? p.labelOpacity : 1
-      ctx.drawImage(labelImg, vp.tx, vp.ty, dw, dh)
-      ctx.globalAlpha = 1
+    // Camadas de baixo para cima; todas são ajustadas ao tamanho da imagem de referência.
+    for (const layer of p.layers) {
+      if (!layer.visible) continue
+      ctx.globalAlpha = layer.opacity
+      ctx.drawImage(layer.img, vp.tx, vp.ty, dw, dh)
     }
-  }, [size, vp, meta?.width, meta?.height, baseImg, labelImg, p.labelOpacity]) // eslint-disable-line react-hooks/exhaustive-deps
+    ctx.globalAlpha = 1
+  }, [size, vp, meta?.width, meta?.height, p.layers]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- zoom com a roda (listener não-passivo para poder chamar preventDefault) ---
   useEffect(() => {
@@ -303,7 +300,7 @@ export default function Viewer(p: Props) {
       onDoubleClick={() => tool === 'draw' && finishDraft()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {!meta && <div className="viewer-empty">Carregue uma imagem (e/ou a máscara de labels) para começar.</div>}
+      {!meta && <div className="viewer-empty">Adicione uma ou mais imagens (painel Camadas) para começar.</div>}
 
       {meta && <canvas ref={canvasRef} className="raster" />}
 
@@ -311,7 +308,10 @@ export default function Viewer(p: Props) {
         // O SVG cobre o contêiner e a transformação fica DENTRO dele: o navegador redesenha o vetor
         // na resolução nativa a cada zoom (sem esticar bitmap).
         <svg className="overlay">
-          <g transform={`translate(${vp.tx} ${vp.ty}) scale(${vp.scale})`}>
+          <g
+            transform={`translate(${vp.tx} ${vp.ty}) scale(${vp.scale})`}
+            style={{ display: p.showStrokes ? undefined : 'none' }}
+          >
             {strokes.map((s) => {
               const color = organColor(s.organ)
               const selected = s.id === p.selectedId

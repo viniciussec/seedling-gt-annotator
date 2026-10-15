@@ -11,6 +11,18 @@ export interface Stroke {
   points: Point[]
 }
 
+/** Camada de imagem (original, máscara, etc.). A ordem no array é de baixo para cima. */
+export interface Layer {
+  id: string
+  name: string
+  url: string
+  img: HTMLImageElement
+  width: number
+  height: number
+  visible: boolean
+  opacity: number // 0–1
+}
+
 export interface ImageMeta {
   name: string
   width: number

@@ -2,24 +2,33 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import Viewer from './components/Viewer'
 import Toolbar from './components/Toolbar'
 import StrokeList from './components/StrokeList'
+import LayerPanel from './components/LayerPanel'
 import { useViewport } from './hooks/useViewport'
 import { docReducer, initialDoc } from './state/docReducer'
 import { exportGt, loadDraft, parseGt, saveDraft } from './lib/io'
-import type { ImageMeta, Organ, Point, Stroke, Tool } from './types'
+import type { ImageMeta, Layer, Organ, Point, Stroke, Tool } from './types'
 import { ORGANS } from './types'
 
-interface Loaded {
-  url: string
-  name: string
-  width: number
-  height: number
-}
+const newId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2)
 
-function readImage(file: File): Promise<Loaded> {
+function readImage(file: File): Promise<Layer> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file)
     const img = new Image()
-    img.onload = () => resolve({ url, name: file.name, width: img.naturalWidth, height: img.naturalHeight })
+    img.onload = () =>
+      resolve({
+        id: newId(),
+        name: file.name,
+        url,
+        img,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        visible: true,
+        opacity: 1,
+      })
     img.onerror = () => {
       URL.revokeObjectURL(url)
       reject(new Error(`Não foi possível ler a imagem "${file.name}".`))
@@ -33,9 +42,16 @@ export default function App() {
   const { vp, zoomAt, panBy, fit, actualSize } = useViewport()
   const [doc, dispatch] = useReducer(docReducer, initialDoc)
 
-  const [base, setBase] = useState<Loaded | null>(null)
-  const [label, setLabel] = useState<Loaded | null>(null)
-  const [labelOpacity, setLabelOpacity] = useState(0.5)
+  const [layers, setLayersState] = useState<Layer[]>([]) // de baixo para cima
+  // Fonte da verdade síncrona: várias operações seguidas (antes de re-renderizar) enxergam o estado mais recente.
+  const layersRef = useRef<Layer[]>([])
+  const setLayers = (next: Layer[] | ((prev: Layer[]) => Layer[])) => {
+    const value = typeof next === 'function' ? next(layersRef.current) : next
+    layersRef.current = value
+    setLayersState(value)
+  }
+  const [refId, setRefId] = useState<string | null>(null)
+  const [showStrokes, setShowStrokes] = useState(true)
   const [tool, setTool] = useState<Tool>('freehand')
   const [organ, setOrgan] = useState<Organ>('hipocotilo')
   const [seedlingId, setSeedlingId] = useState<number | null>(1)
@@ -45,8 +61,8 @@ export default function App() {
   const [minVisible, setMinVisible] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
-  // A imagem de referência define o sistema de coordenadas; sem ela, usa-se a máscara.
-  const ref = base ?? label
+  // A camada de referência define o tamanho da imagem e o sistema de coordenadas do GT.
+  const ref = layers.find((l) => l.id === refId) ?? layers[0] ?? null
   const meta: ImageMeta | null = useMemo(
     () => (ref ? { name: ref.name, width: ref.width, height: ref.height } : null),
     [ref?.name, ref?.width, ref?.height], // eslint-disable-line react-hooks/exhaustive-deps
@@ -76,39 +92,88 @@ export default function App() {
     if (meta) saveDraft(meta, doc.strokes)
   }, [meta?.name, meta?.width, meta?.height, doc.strokes]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const checkSizes = (a: Loaded | null, b: Loaded | null) =>
-    a && b && (a.width !== b.width || a.height !== b.height)
-      ? `Atenção: imagem (${a.width}×${a.height}) e máscara (${b.width}×${b.height}) têm tamanhos diferentes.`
+  const sizeWarning = (added: Layer[], r: Layer | null) => {
+    const bad = r ? added.filter((l) => l.width !== r.width || l.height !== r.height) : []
+    return bad.length
+      ? `Atenção: ${bad.map((l) => `${l.name} (${l.width}×${l.height})`).join(', ')} difere(m) da referência (${r!.width}×${r!.height}) e será(ão) ajustada(s) a ela.`
       : null
-
-  const onPickBase = async (f: File) => {
-    try {
-      const loaded = await readImage(f)
-      if (base) URL.revokeObjectURL(base.url)
-      setBase(loaded)
-      setSelectedId(null)
-      const m = { name: loaded.name, width: loaded.width, height: loaded.height }
-      const draft = loadDraft(m)
-      dispatch({ type: 'reset', strokes: draft ?? [] })
-      setNotice(checkSizes(loaded, label) ?? (draft?.length ? `Rascunho restaurado (${draft.length} traços).` : null))
-    } catch (e) {
-      setNotice((e as Error).message)
-    }
   }
 
-  const onPickLabel = async (f: File) => {
-    try {
-      const loaded = await readImage(f)
-      if (label) URL.revokeObjectURL(label.url)
-      setLabel(loaded)
-      if (!base) {
-        const draft = loadDraft({ name: loaded.name, width: loaded.width, height: loaded.height })
-        dispatch({ type: 'reset', strokes: draft ?? [] })
-      }
-      setNotice(checkSizes(base, loaded))
-    } catch (e) {
-      setNotice((e as Error).message)
+  const onAddImages = async (files: File[]) => {
+    const results = await Promise.allSettled(files.map(readImage))
+    const loaded = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    const failed = results.length - loaded.length
+    if (loaded.length === 0) {
+      setNotice('Não foi possível ler as imagens selecionadas.')
+      return
     }
+    const wasEmpty = layersRef.current.length === 0
+    // a primeira camada fica opaca; as seguintes entram semitransparentes (ex.: máscara sobre a foto)
+    loaded.forEach((l, i) => (l.opacity = wasEmpty && i === 0 ? 1 : 0.5))
+    setLayers((prev) => [...prev, ...loaded])
+
+    let msg: string | null = null
+    if (wasEmpty) {
+      const first = loaded[0]
+      setRefId(first.id)
+      setSelectedId(null)
+      const draft = loadDraft({ name: first.name, width: first.width, height: first.height })
+      dispatch({ type: 'reset', strokes: draft ?? [] })
+      if (draft?.length) msg = `Rascunho restaurado (${draft.length} traços).`
+    }
+    msg = sizeWarning(loaded, wasEmpty ? loaded[0] : ref) ?? msg
+    if (failed) msg = `${failed} arquivo(s) não puderam ser lidos. ${msg ?? ''}`
+    setNotice(msg)
+  }
+
+  const toggleLayer = (id: string) =>
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)))
+  const setLayerOpacity = (id: string, opacity: number) =>
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, opacity } : l)))
+  const moveLayer = (id: string, dir: 'up' | 'down') =>
+    setLayers((prev) => {
+      const i = prev.findIndex((l) => l.id === id)
+      const j = dir === 'up' ? i + 1 : i - 1
+      if (i < 0 || j < 0 || j >= prev.length) return prev
+      const next = [...prev]
+      ;[next[i], next[j]] = [next[j], next[i]]
+      return next
+    })
+  const reorderLayer = (fromId: string, toId: string) =>
+    setLayers((prev) => {
+      const from = prev.findIndex((l) => l.id === fromId)
+      const to = prev.findIndex((l) => l.id === toId)
+      if (from < 0 || to < 0 || from === to) return prev
+      const next = [...prev]
+      const [m] = next.splice(from, 1)
+      next.splice(to, 0, m)
+      return next
+    })
+  const removeLayer = (id: string) => {
+    const current = layersRef.current
+    const target = current.find((l) => l.id === id)
+    if (!target) return
+    URL.revokeObjectURL(target.url)
+    const rest = current.filter((l) => l.id !== id)
+    setLayers(rest)
+    if (rest.length === 0) {
+      setRefId(null)
+      setSelectedId(null)
+      dispatch({ type: 'reset', strokes: [] })
+    } else if ((current.find((l) => l.id === refId) ?? current[0])?.id === id) {
+      setRefId(rest[0].id)
+      setNotice(`Referência trocada para "${rest[0].name}"; os traços foram mantidos.`)
+    }
+  }
+  const setReference = (id: string) => {
+    const l = layersRef.current.find((x) => x.id === id)
+    if (!l) return
+    setRefId(id)
+    setNotice(
+      ref && (l.width !== ref.width || l.height !== ref.height)
+        ? `Referência alterada para ${l.width}×${l.height}; os traços foram mantidos e podem ficar desalinhados.`
+        : null,
+    )
   }
 
   const onImportGt = async (f: File) => {
@@ -173,6 +238,19 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <h1>Anotador de Esqueletos</h1>
+        <LayerPanel
+          layers={layers}
+          refId={ref?.id ?? null}
+          showStrokes={showStrokes}
+          onToggleStrokes={setShowStrokes}
+          onAdd={onAddImages}
+          onToggle={toggleLayer}
+          onOpacity={setLayerOpacity}
+          onMove={moveLayer}
+          onReorder={reorderLayer}
+          onRemove={removeLayer}
+          onSetRef={setReference}
+        />
         <Toolbar
           tool={tool}
           setTool={setTool}
@@ -182,12 +260,8 @@ export default function App() {
           setSimplifyTol={setSimplifyTol}
           seedlingId={seedlingId}
           setSeedlingId={setSeedlingId}
-          labelOpacity={labelOpacity}
-          setLabelOpacity={setLabelOpacity}
           minVisible={minVisible}
           setMinVisible={setMinVisible}
-          hasBase={!!base}
-          hasLabel={!!label}
           canUndo={doc.past.length > 0}
           canRedo={doc.future.length > 0}
           canExport={!!meta}
@@ -196,8 +270,6 @@ export default function App() {
           onZoom={zoomCenter}
           onFit={fitToView}
           onActualSize={() => meta && actualSize(containerSize().w, containerSize().h, meta.width, meta.height)}
-          onPickBase={onPickBase}
-          onPickLabel={onPickLabel}
           onImportGt={onImportGt}
           onExport={() => meta && exportGt(meta, doc.strokes)}
         />
@@ -218,9 +290,8 @@ export default function App() {
         <Viewer
           containerRef={containerRef}
           meta={meta}
-          baseUrl={base?.url ?? null}
-          labelUrl={label?.url ?? null}
-          labelOpacity={labelOpacity}
+          layers={layers}
+          showStrokes={showStrokes}
           vp={vp}
           zoomAt={zoomAt}
           panBy={panBy}
@@ -232,7 +303,10 @@ export default function App() {
           minVisible={minVisible}
           selectedId={selectedId}
           onSelect={setSelectedId}
-          onCommit={(strokes) => dispatch({ type: 'commit', strokes })}
+          onCommit={(strokes) => {
+            setShowStrokes(true)
+            dispatch({ type: 'commit', strokes })
+          }}
           onSet={(strokes) => dispatch({ type: 'set', strokes })}
           onCheckpoint={() => dispatch({ type: 'checkpoint' })}
           onCursor={setCursor}
