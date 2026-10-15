@@ -16,49 +16,57 @@ npm run build      # checagem de tipos + build de produção
 
 ## Uso
 
-1. **Camadas**: use **Adicionar imagens** (aceita várias de uma vez) para carregar a original, a máscara (`originals-dataset/X.jpg`, `labeled-dataset/X.png`) e quaisquer outras imagens.
+1. **Camadas**: use **Adicionar imagens** (aceita várias de uma vez) para carregar a original, a máscara (`originals-dataset/X.jpg`, `labeled-dataset/X.png`) e quaisquer outras imagens — por exemplo, o esqueleto de um algoritmo, para comparar com o seu desenho.
    Cada camada tem **visibilidade**, **opacidade** e **ordem** (arraste a alça ⋮⋮ ou use ▲▼); a do topo da lista fica por cima. Os traços do GT ficam sempre acima das imagens e também podem ser ocultados.
    A camada marcada **ref** define o tamanho e as coordenadas do GT (a primeira adicionada; troque com ⌖). As demais são ajustadas ao tamanho dela.
 2. Escolha o órgão (**Hipocótilo** `1` / **Raiz** `2`) e o **ID da plântula** (hipocótilo e raiz da mesma plântula usam o mesmo ID).
-3. **Mão livre** (`H`, padrão): segure o botão e arraste sobre o órgão; ao soltar, o traço é criado. Ele é simplificado (Ramer–Douglas–Peucker) com a tolerância "Simplificação (px)" (padrão 0,4 px da imagem; 0 mantém todos os pontos). **Pontos** (`D`) é a alternativa por cliques, descrita abaixo.
-3. O traço é desenhado com **exatamente 1 pixel da imagem** de largura (muda com o zoom; abaixo de 100% fica mais fino que um pixel de tela — há uma opção só visual para engrossá-lo nesse caso). Ferramenta **Desenhar** (`D`): clique para adicionar pontos; **Enter** ou duplo clique finaliza;
-   **Backspace** remove o último ponto; **Esc** cancela.
-4. Ferramenta **Editar** (`S`): clique no traço para selecionar, arraste vértices, botão direito num vértice o remove,
-   **Delete** exclui o traço selecionado.
-5. **Zoom**: roda do mouse (centrado no cursor). **Mover**: ferramenta Mover (`M`), segurar **Espaço**, ou botão do meio. `F` ajusta à janela.
-6. **Ctrl+Z / Ctrl+Shift+Z** desfazem/refazem. Um rascunho é salvo automaticamente no `localStorage` por imagem.
-7. **Exportar GT** gera `<imagem>.gt.json`; **Importar GT** reabre um arquivo.
+3. **O desenho é em pixels**, não vetorial: cada traço é gravado como uma **cadeia de pixels inteiros, 8-conexa e fina** (sem pixels de "quina" redundantes), a mesma natureza da saída de `skeletonize`/`medial_axis`. Na tela, cada pixel do traço é pintado como um pixel da imagem.
+   - **Mão livre** (`H`, padrão): segure e arraste; pontos consecutivos são ligados por Bresenham.
+   - **Pontos** (`D`): clique para marcar vértices (ligados por Bresenham); **Enter** ou duplo clique finaliza, **Backspace** remove o último, **Esc** cancela.
+   - **Borracha** (`E`): apaga pixels dentro do raio configurado; um traço cortado ao meio vira dois.
+   - **Selecionar** (`S`): clique perto de um traço para selecioná-lo; **Delete** o exclui.
+   - **Mover** (`M`), **Espaço** ou botão do meio: mover a imagem. Roda do mouse: zoom. `F` ajusta à janela.
+4. **Ctrl+Z / Ctrl+Shift+Z** desfazem/refazem. Um rascunho é salvo no `localStorage` por imagem.
+5. **Exportar GT** gera `<imagem>.gt.json`; **Exportar máscaras PNG** gera `<imagem>.gt.hipocotilo.png` e `<imagem>.gt.raiz.png`; **Importar GT** reabre um JSON (também aceita o formato antigo, vetorial, que é convertido para pixels).
 
-## Formato do arquivo (`*.gt.json`)
+## Formato do arquivo (`*.gt.json`, versão 2)
 
 ```json
 {
-  "version": 1,
-  "coordinate_system": "image-pixels-xy",
+  "version": 2,
+  "coordinate_system": "image-pixels-xy-integer",
   "image": { "name": "C10-R10_...jpg", "width": 640, "height": 640 },
   "strokes": [
-    { "id": "…", "organ": "hipocotilo", "seedling_id": 1, "points": [[x, y], [x, y]] }
+    { "id": "…", "organ": "hipocotilo", "seedling_id": 1, "pixels": [[x, y], [x, y]] }
   ]
 }
 ```
 
-Coordenadas em pixels da imagem original, origem no canto superior esquerdo. Os pontos vão do colo ao ápice
-(convenção a ser fixada no protocolo de anotação). O `seedling_id` é o da anotação; para casar com as plântulas do
-`benchmark` (`skeleton_lib.identify_seedlings`) usa-se a sobreposição espacial, não o número.
+`pixels` é a cadeia ordenada de pixels do esqueleto (índices inteiros, origem no canto superior esquerdo, `x` = coluna, `y` = linha).
+As máscaras PNG têm o mesmo tamanho da imagem de referência: esqueleto = 255, fundo = 0 (uma por órgão, todas as plântulas juntas).
+Para casar com as plântulas do `benchmark` (`skeleton_lib.identify_seedlings`) usa-se a sobreposição espacial, não o número.
+
+Exemplo de leitura para comparar com um esqueleto de algoritmo (`skimage`):
+
+```python
+import numpy as np, cv2
+gt = cv2.imread("X.gt.hipocotilo.png", cv2.IMREAD_GRAYSCALE) == 255   # bool (H, W)
+pred = skeletonize(mask_hyp)                                          # bool (H, W)
+```
 
 ## Estrutura
 
 ```
 src/
   App.tsx                 estado global, atalhos, carregamento de arquivos
-  components/Viewer.tsx   zoom/pan, desenho e edição (imagem em <canvas>, traços em SVG sobre ela)
+  components/Viewer.tsx   zoom/pan, desenho e edição (imagens em <canvas>; traços em pixels em outro <canvas> por cima)
   components/Toolbar.tsx  controles
   components/LayerPanel.tsx  lista de camadas (visibilidade, opacidade, ordem, referência)
   components/StrokeList.tsx
   hooks/useViewport.ts    zoom centrado no cursor, enquadramento
   state/docReducer.ts     traços + histórico (undo/redo)
   lib/io.ts               exportar/importar JSON, rascunho local
-  lib/geometry.ts
+  lib/geometry.ts         Bresenham, cadeia fina 8-conexa, comprimento de cadeia
 ```
 
 ## Próximos passos (fora da casca)

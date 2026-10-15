@@ -1,14 +1,18 @@
 export type Organ = 'hipocotilo' | 'raiz'
-export type Point = [number, number] // [x, y] em pixels da imagem original
-export type Tool = 'freehand' | 'draw' | 'pan' | 'select'
+export type Point = [number, number] // posição contínua [x, y] na imagem (para o cursor)
+export type Pixel = [number, number] // pixel inteiro [x, y] da imagem original
+export type Tool = 'freehand' | 'draw' | 'erase' | 'pan' | 'select'
 
 export interface Stroke {
   id: string
   organ: Organ
   /** Plântula à qual o traço pertence (hipocótilo e raiz da mesma plântula compartilham o id). */
   seedling_id: number | null
-  /** Polilinha do eixo do órgão, ordenada do colo para o ápice (convenção a definir no protocolo). */
-  points: Point[]
+  /**
+   * Esqueleto desenhado, como cadeia ordenada de pixels inteiros, 8-conexa e sem pixels redundantes
+   * (mesma natureza da saída dos algoritmos de esqueletização). Ordem: do colo para o ápice (a definir no protocolo).
+   */
+  pixels: Pixel[]
 }
 
 /** Camada de imagem (original, máscara, etc.). A ordem no array é de baixo para cima. */
@@ -31,8 +35,8 @@ export interface ImageMeta {
 
 /** Formato do arquivo exportado/importado. */
 export interface GtFile {
-  version: 1
-  coordinate_system: 'image-pixels-xy'
+  version: 2
+  coordinate_system: 'image-pixels-xy-integer'
   image: ImageMeta
   strokes: Stroke[]
 }

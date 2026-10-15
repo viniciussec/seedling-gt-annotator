@@ -1,6 +1,6 @@
 import type { Stroke } from '../types'
 import { organColor, organLabel } from '../types'
-import { polylineLength } from '../lib/geometry'
+import { chainLength } from '../lib/geometry'
 
 interface Props {
   strokes: Stroke[]
@@ -26,7 +26,7 @@ export default function StrokeList({ strokes, selectedId, onSelect, onDelete, on
             {organLabel(s.organ)}
             <small className="muted">
               {' '}
-              · {s.points.length} pts · {polylineLength(s.points).toFixed(1)} px
+              · {s.pixels.length} px · comp. {chainLength(s.pixels).toFixed(1)}
             </small>
           </span>
           <input

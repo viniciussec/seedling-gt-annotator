@@ -5,7 +5,7 @@ import StrokeList from './components/StrokeList'
 import LayerPanel from './components/LayerPanel'
 import { useViewport } from './hooks/useViewport'
 import { docReducer, initialDoc } from './state/docReducer'
-import { exportGt, loadDraft, parseGt, saveDraft } from './lib/io'
+import { exportGt, exportMasks, loadDraft, parseGt, saveDraft } from './lib/io'
 import type { ImageMeta, Layer, Organ, Point, Stroke, Tool } from './types'
 import { ORGANS } from './types'
 
@@ -57,8 +57,8 @@ export default function App() {
   const [seedlingId, setSeedlingId] = useState<number | null>(1)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [cursor, setCursor] = useState<Point | null>(null)
-  const [simplifyTol, setSimplifyTol] = useState(0.4)
-  const [minVisible, setMinVisible] = useState(false)
+  const [eraserRadius, setEraserRadius] = useState(2)
+  const [minVisible, setMinVisible] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
 
   // A camada de referência define o tamanho da imagem e o sistema de coordenadas do GT.
@@ -218,6 +218,7 @@ export default function App() {
         const k = e.key.toLowerCase()
         if (k === 'h') setTool('freehand')
         else if (k === 'd') setTool('draw')
+        else if (k === 'e') setTool('erase')
         else if (k === 's') setTool('select')
         else if (k === 'm') setTool('pan')
         else if (k === 'f') fitToView()
@@ -256,8 +257,8 @@ export default function App() {
           setTool={setTool}
           organ={organ}
           setOrgan={setOrgan}
-          simplifyTol={simplifyTol}
-          setSimplifyTol={setSimplifyTol}
+          eraserRadius={eraserRadius}
+          setEraserRadius={setEraserRadius}
           seedlingId={seedlingId}
           setSeedlingId={setSeedlingId}
           minVisible={minVisible}
@@ -272,6 +273,7 @@ export default function App() {
           onActualSize={() => meta && actualSize(containerSize().w, containerSize().h, meta.width, meta.height)}
           onImportGt={onImportGt}
           onExport={() => meta && exportGt(meta, doc.strokes)}
+          onExportMasks={() => meta && exportMasks(meta, doc.strokes)}
         />
         <h3>Traços ({doc.strokes.length})</h3>
         <StrokeList
@@ -299,7 +301,7 @@ export default function App() {
           tool={tool}
           organ={organ}
           seedlingId={seedlingId}
-          simplifyTol={simplifyTol}
+          eraserRadius={eraserRadius}
           minVisible={minVisible}
           selectedId={selectedId}
           onSelect={setSelectedId}
@@ -314,7 +316,7 @@ export default function App() {
         <div className="statusbar">
           <span>{meta ? `${meta.name} · ${meta.width}×${meta.height}` : 'Sem imagem'}</span>
           <span>Zoom {(vp.scale * 100).toFixed(0)}%</span>
-          <span>{cursor ? `x ${cursor[0].toFixed(1)}  y ${cursor[1].toFixed(1)}` : ''}</span>
+          <span>{cursor && meta ? `pixel (${Math.max(0, Math.min(meta.width - 1, Math.floor(cursor[0])))}, ${Math.max(0, Math.min(meta.height - 1, Math.floor(cursor[1])))})` : ''}</span>
           {notice && (
             <span className="notice" onClick={() => setNotice(null)} title="Clique para dispensar">
               {notice}

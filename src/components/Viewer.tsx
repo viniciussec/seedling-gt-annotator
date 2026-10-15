@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react'
-import type { ImageMeta, Layer, Organ, Point, Stroke, Tool } from '../types'
+import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
+import type { ImageMeta, Layer, Organ, Pixel, Point, Stroke, Tool } from '../types'
 import { organColor } from '../types'
 import type { Viewport } from '../hooks/useViewport'
-import { clamp, dist, polylineLength, simplifyRdp } from '../lib/geometry'
+import { appendPixel, bresenham, dist, pixelOf, rasterizePolyline } from '../lib/geometry'
 
 interface Props {
   containerRef: RefObject<HTMLDivElement>
@@ -17,7 +17,7 @@ interface Props {
   tool: Tool
   organ: Organ
   seedlingId: number | null
-  simplifyTol: number
+  eraserRadius: number
   minVisible: boolean
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -42,28 +42,59 @@ const capture = (el: Element, id: number) => {
 }
 
 const CLICK_TOLERANCE_PX = 4 // acima disso o gesto é um arraste, não um clique
+const SELECT_RADIUS_PX = 8 // raio (em px de tela) para selecionar um traço clicando perto dele
+
+/**
+ * Apaga os pixels que estão a até `r` (px da imagem) de algum dos `centers`. Traços cortados ao meio
+ * viram vários traços (pedaços com menos de 2 pixels são descartados). Devolve null se nada mudou.
+ */
+function eraseStrokes(strokes: Stroke[], centers: Point[], r: number): Stroke[] | null {
+  let changed = false
+  const out: Stroke[] = []
+  for (const s of strokes) {
+    const keep = s.pixels.map(
+      ([x, y]) => !centers.some((c) => Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1]) <= r),
+    )
+    if (keep.every(Boolean)) {
+      out.push(s)
+      continue
+    }
+    changed = true
+    let run: Pixel[] = []
+    const flush = () => {
+      if (run.length >= 2) out.push({ id: newId(), organ: s.organ, seedling_id: s.seedling_id, pixels: run })
+      run = []
+    }
+    s.pixels.forEach((px, i) => (keep[i] ? run.push(px) : flush()))
+    flush()
+  }
+  return changed ? out : null
+}
 
 export default function Viewer(p: Props) {
   const { containerRef, meta, vp, zoomAt, panBy, strokes, tool, organ } = p
-  const [draft, setDraft] = useState<Point[]>([])
+  const [draft, setDraft] = useState<Pixel[]>([]) // vértices clicados (modo "Pontos"), como pixels
+  const [free, setFree] = useState<Pixel[]>([]) // cadeia em andamento (modo "Mão livre")
   const [cursor, setCursor] = useState<Point | null>(null)
   const [spaceDown, setSpaceDown] = useState(false)
   const [panningNow, setPanningNow] = useState(false)
+  const [size, setSize] = useState({ w: 0, h: 0 })
 
-  // mão livre: pontos do traço em andamento (ref para leitura imediata + state para renderizar)
-  const [free, setFree] = useState<Point[]>([])
-  const freeRef = useRef<Point[] | null>(null)
+  const rasterRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+
+  const panRef = useRef<{ x: number; y: number } | null>(null)
+  const clickRef = useRef<{ x: number; y: number } | null>(null)
+  const freeRef = useRef<{ chain: Pixel[]; last: Point; len: number } | null>(null)
+  const eraseRef = useRef<{ last: Point; started: boolean } | null>(null)
+  // Traços mais recentes, de forma síncrona: movimentos seguidos da borracha (antes de re-renderizar) acumulam.
+  const strokesRef = useRef(strokes)
+  strokesRef.current = strokes
+
   const resetFree = () => {
     freeRef.current = null
     setFree([])
   }
-
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [size, setSize] = useState({ w: 0, h: 0 })
-
-  const panRef = useRef<{ x: number; y: number } | null>(null)
-  const clickRef = useRef<{ x: number; y: number } | null>(null)
-  const vertexRef = useRef<{ strokeId: string; index: number } | null>(null)
 
   // --- tamanho do contêiner (em px CSS) ---
   useEffect(() => {
@@ -76,27 +107,31 @@ export default function Viewer(p: Props) {
     return () => ro.disconnect()
   }, [containerRef])
 
-  // --- raster: imagem e máscara desenhadas direto no canvas, já na escala atual e na resolução do monitor.
-  // Evita escalar uma camada pronta por CSS (que estica o bitmap e borra). Ampliando, sem suavização:
-  // cada pixel da imagem aparece como um bloco nítido.
-  useEffect(() => {
-    const cv = canvasRef.current
-    if (!cv || !meta) return
+  /** Prepara um canvas para desenhar em coordenadas CSS, com resolução do monitor. */
+  const prepare = (cv: HTMLCanvasElement) => {
     const dpr = window.devicePixelRatio || 1
     const w = Math.max(1, Math.round(size.w * dpr))
     const h = Math.max(1, Math.round(size.h * dpr))
     if (cv.width !== w) cv.width = w
     if (cv.height !== h) cv.height = h
     const ctx = cv.getContext('2d')
-    if (!ctx) return
+    if (!ctx) return null
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, w, h)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    return ctx
+  }
+
+  // --- camada de imagens: desenhadas já na escala atual (sem esticar bitmap); ampliando, sem suavização ---
+  useEffect(() => {
+    const cv = rasterRef.current
+    if (!cv || !meta) return
+    const ctx = prepare(cv)
+    if (!ctx) return
     ctx.imageSmoothingEnabled = vp.scale < 1
     ctx.imageSmoothingQuality = 'high'
     const dw = meta.width * vp.scale
     const dh = meta.height * vp.scale
-    // Camadas de baixo para cima; todas são ajustadas ao tamanho da imagem de referência.
     for (const layer of p.layers) {
       if (!layer.visible) continue
       ctx.globalAlpha = layer.opacity
@@ -104,6 +139,65 @@ export default function Viewer(p: Props) {
     }
     ctx.globalAlpha = 1
   }, [size, vp, meta?.width, meta?.height, p.layers]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- camada de desenho: cada pixel do esqueleto é pintado como um pixel da imagem ---
+  useEffect(() => {
+    const cv = overlayRef.current
+    if (!cv || !meta) return
+    const ctx = prepare(cv)
+    if (!ctx) return
+    const s = vp.scale
+    // Tamanho do pixel na tela. Com "visibilidade mínima", em zoom baixo cada pixel ocupa ao menos 1 px de tela
+    // (apenas visual; os dados não mudam).
+    const size1 = p.minVisible ? Math.max(s, 1) : s
+    const off = (s - size1) / 2
+    const paint = (pixels: Pixel[], color: string, extra = 0) => {
+      ctx.fillStyle = color
+      for (const [x, y] of pixels) {
+        ctx.fillRect(vp.tx + x * s + off - extra, vp.ty + y * s + off - extra, size1 + 2 * extra, size1 + 2 * extra)
+      }
+    }
+
+    if (p.showStrokes) {
+      for (const st of strokes) {
+        if (st.id === p.selectedId) paint(st.pixels, '#ffffff', Math.max(1.5, s * 0.35)) // contorno de seleção
+      }
+      for (const st of strokes) paint(st.pixels, organColor(st.organ))
+    }
+
+    const color = organColor(organ)
+    if (free.length > 0) paint(free, color)
+    if (draft.length > 0) {
+      paint(rasterizePolyline(draft, meta.width, meta.height), color)
+      // marcadores dos vértices e linha-guia até o cursor
+      ctx.strokeStyle = color
+      ctx.fillStyle = '#fff'
+      draft.forEach(([x, y], i) => {
+        const r = i === 0 ? 4.5 : 3
+        ctx.beginPath()
+        ctx.rect(vp.tx + (x + 0.5) * s - r, vp.ty + (y + 0.5) * s - r, 2 * r, 2 * r)
+        ctx.fill()
+        ctx.stroke()
+      })
+      if (cursor) {
+        const [lx, ly] = draft[draft.length - 1]
+        ctx.setLineDash([4, 4])
+        ctx.beginPath()
+        ctx.moveTo(vp.tx + (lx + 0.5) * s, vp.ty + (ly + 0.5) * s)
+        ctx.lineTo(vp.tx + cursor[0] * s, vp.ty + cursor[1] * s)
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+    }
+
+    if (tool === 'erase' && cursor) {
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(vp.tx + cursor[0] * s, vp.ty + cursor[1] * s, Math.max(2, p.eraserRadius * s), 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }, [size, vp, meta?.width, meta?.height, strokes, p.selectedId, p.showStrokes, p.minVisible, free, draft, cursor, tool, organ, p.eraserRadius]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- zoom com a roda (listener não-passivo para poder chamar preventDefault) ---
   useEffect(() => {
@@ -118,24 +212,26 @@ export default function Viewer(p: Props) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [containerRef, zoomAt])
 
-  // --- rascunho em andamento é descartado ao trocar de ferramenta/imagem ---
+  // --- rascunhos em andamento são descartados ao trocar de ferramenta/imagem ---
   // (dependências primitivas: o objeto `meta` pode ser recriado a cada render sem que a imagem mude)
   useEffect(() => {
     setDraft([])
     resetFree()
+    eraseRef.current = null
   }, [tool, meta?.name, meta?.width, meta?.height]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const finishDraft = () => {
-    if (draft.length >= 2) {
-      p.onCommit([
-        ...strokes,
-        { id: newId(), organ, seedling_id: p.seedlingId, points: draft },
-      ])
+  const commitPixels = (pixels: Pixel[]) => {
+    if (pixels.length >= 2) {
+      p.onCommit([...strokes, { id: newId(), organ, seedling_id: p.seedlingId, pixels }])
     }
+  }
+
+  const finishDraft = () => {
+    if (meta) commitPixels(rasterizePolyline(draft, meta.width, meta.height))
     setDraft([])
   }
 
-  // --- teclado local: espaço (pan temporário), Enter, Esc, Backspace ---
+  // --- teclado local: espaço (mover temporário), Enter, Esc, Backspace ---
   useEffect(() => {
     const typing = (t: EventTarget | null) =>
       t instanceof HTMLElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(t.tagName)
@@ -169,8 +265,37 @@ export default function Viewer(p: Props) {
     const r = containerRef.current!.getBoundingClientRect()
     return [(e.clientX - r.left - vp.tx) / vp.scale, (e.clientY - r.top - vp.ty) / vp.scale]
   }
-  const clampToImage = ([x, y]: Point): Point =>
-    meta ? [clamp(x, 0, meta.width), clamp(y, 0, meta.height)] : [x, y]
+  const toPixel = (ip: Point): Pixel => pixelOf(ip, meta!.width, meta!.height)
+
+  /** Apaga ao longo do segmento a→b (amostrado para não deixar lacunas em movimentos rápidos). */
+  const eraseAlong = (a: Point, b: Point) => {
+    const r = Math.max(0.5, p.eraserRadius)
+    const steps = Math.max(1, Math.ceil(dist(a, b) / (r * 0.5)))
+    const centers: Point[] = []
+    for (let i = 0; i <= steps; i++) centers.push([a[0] + ((b[0] - a[0]) * i) / steps, a[1] + ((b[1] - a[1]) * i) / steps])
+    const next = eraseStrokes(strokesRef.current, centers, r)
+    if (!next) return
+    strokesRef.current = next
+    if (eraseRef.current && !eraseRef.current.started) {
+      eraseRef.current.started = true
+      p.onCheckpoint() // um único passo de "desfazer" para todo o gesto da borracha
+    }
+    if (p.selectedId && !next.some((s) => s.id === p.selectedId)) p.onSelect(null)
+    p.onSet(next)
+  }
+
+  /** Seleciona o traço com pixel mais próximo do ponto (dentro do raio de seleção). */
+  const selectAt = (ip: Point) => {
+    const maxD = Math.max(1, SELECT_RADIUS_PX / vp.scale)
+    let best: { id: string; d: number } | null = null
+    for (const s of strokes) {
+      for (const [x, y] of s.pixels) {
+        const d = Math.hypot(x + 0.5 - ip[0], y + 0.5 - ip[1])
+        if (d <= maxD && (!best || d < best.d)) best = { id: s.id, d }
+      }
+    }
+    p.onSelect(best ? best.id : null)
+  }
 
   // --- ponteiro ---
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -184,16 +309,21 @@ export default function Viewer(p: Props) {
       return
     }
     if (e.button !== 0) return
+    const ip = toImage(e)
     if (tool === 'freehand') {
-      const first = clampToImage(toImage(e))
-      freeRef.current = [first]
+      const first = toPixel(ip)
+      freeRef.current = { chain: [first], last: ip, len: 0 }
       setFree([first])
       capture(e.currentTarget, e.pointerId)
     } else if (tool === 'draw') {
       clickRef.current = { x: e.clientX, y: e.clientY }
       capture(e.currentTarget, e.pointerId)
+    } else if (tool === 'erase') {
+      eraseRef.current = { last: ip, started: false }
+      capture(e.currentTarget, e.pointerId)
+      eraseAlong(ip, ip)
     } else if (tool === 'select') {
-      p.onSelect(null) // clique no fundo desmarca (traços e vértices interceptam o evento antes)
+      selectAt(ip)
     }
   }
 
@@ -203,33 +333,35 @@ export default function Viewer(p: Props) {
       panRef.current = { x: e.clientX, y: e.clientY }
       return
     }
+    if (!meta) return
     const ip = toImage(e)
     setCursor(ip)
     p.onCursor(ip)
-    if (freeRef.current) {
+
+    const f = freeRef.current
+    if (f) {
       // usa os eventos "coalescidos" para não perder detalhe em movimentos rápidos
       const evs = e.nativeEvent.getCoalescedEvents?.() ?? []
       const samples = evs.length > 0 ? evs : [e.nativeEvent]
-      const pts = freeRef.current
       let added = false
       for (const ev of samples) {
-        const q = clampToImage(toImage(ev))
-        if (dist(pts[pts.length - 1], q) * vp.scale >= 1.5) {
-          pts.push(q) // amostra a cada ~1,5 px de tela
-          added = true
-        }
+        const q = toImage(ev)
+        if (dist(f.last, q) * vp.scale < 1) continue // amostra a cada ~1 px de tela
+        // liga o pixel anterior ao novo por Bresenham: a cadeia fica 8-conexa e fina
+        const from = f.chain[f.chain.length - 1]
+        for (const px of bresenham(from, toPixel(q)).slice(1)) appendPixel(f.chain, px)
+        f.len += dist(f.last, q)
+        f.last = q
+        added = true
       }
-      if (added) setFree([...pts])
+      if (added) setFree([...f.chain])
       return
     }
-    const v = vertexRef.current
-    if (v) {
-      const target = clampToImage(ip)
-      p.onSet(
-        strokes.map((s) =>
-          s.id === v.strokeId ? { ...s, points: s.points.map((q, i) => (i === v.index ? target : q)) } : s,
-        ),
-      )
+
+    const er = eraseRef.current
+    if (er) {
+      eraseAlong(er.last, ip)
+      er.last = ip
     }
   }
 
@@ -238,52 +370,31 @@ export default function Viewer(p: Props) {
       panRef.current = null
       setPanningNow(false)
     }
-    vertexRef.current = null
-    if (freeRef.current) {
-      const pts = freeRef.current
-      const last = clampToImage(toImage(e))
-      if (dist(pts[pts.length - 1], last) > 0) pts.push(last)
+    eraseRef.current = null
+
+    const f = freeRef.current
+    if (f) {
       resetFree()
-      // ignora toques/cliques sem arrasto real (< 4 px de tela de comprimento)
-      if (pts.length >= 2 && polylineLength(pts) * vp.scale >= CLICK_TOLERANCE_PX) {
-        const simplified = simplifyRdp(pts, p.simplifyTol)
-        p.onCommit([...strokes, { id: newId(), organ, seedling_id: p.seedlingId, points: simplified }])
-      }
+      // ignora cliques/toques sem arrasto real (< 4 px de tela de percurso)
+      if (f.len * vp.scale >= CLICK_TOLERANCE_PX) commitPixels(f.chain)
       return
     }
+
     const c = clickRef.current
     clickRef.current = null
-    if (c && Math.hypot(e.clientX - c.x, e.clientY - c.y) <= CLICK_TOLERANCE_PX) {
-      const pt = clampToImage(toImage(e))
-      setDraft((d) => (d.length > 0 && dist(d[d.length - 1], pt) * vp.scale < 3 ? d : [...d, pt]))
+    if (c && meta && Math.hypot(e.clientX - c.x, e.clientY - c.y) <= CLICK_TOLERANCE_PX) {
+      const px = toPixel(toImage(e))
+      setDraft((d) => (d.length > 0 && d[d.length - 1][0] === px[0] && d[d.length - 1][1] === px[1] ? d : [...d, px]))
     }
   }
 
-  const startVertexDrag = (e: ReactPointerEvent, strokeId: string, index: number) => {
-    if (e.button !== 0 || tool !== 'select') return
-    e.stopPropagation()
-    p.onSelect(strokeId)
-    p.onCheckpoint()
-    vertexRef.current = { strokeId, index }
-    capture(containerRef.current!, e.pointerId)
-  }
-
-  const removeVertex = (e: ReactMouseEvent, strokeId: string, index: number) => {
-    e.preventDefault()
-    if (tool !== 'select') return
-    const next = strokes.map((s) =>
-      s.id === strokeId && s.points.length > 2 ? { ...s, points: s.points.filter((_, i) => i !== index) } : s,
-    )
-    p.onCommit(next)
-  }
-
-  const cursorStyle =
-    panningNow ? 'grabbing' : tool === 'pan' || spaceDown ? 'grab' : tool === 'draw' || tool === 'freehand' ? 'crosshair' : 'default'
-
-  const r = 2.5 / vp.scale // raio dos vértices constante na tela (marcadores pequenos)
-  // Traço com exatamente 1 pixel da imagem. Com "visibilidade mínima", em zoom < 100% a linha é
-  // engrossada só o suficiente para ocupar 1 pixel de tela (apenas visual; os dados não mudam).
-  const lineW = p.minVisible ? Math.max(1, 1 / vp.scale) : 1
+  const cursorStyle = panningNow
+    ? 'grabbing'
+    : tool === 'pan' || spaceDown
+      ? 'grab'
+      : tool === 'select'
+        ? 'default'
+        : 'crosshair'
 
   return (
     <div
@@ -301,107 +412,8 @@ export default function Viewer(p: Props) {
       onContextMenu={(e) => e.preventDefault()}
     >
       {!meta && <div className="viewer-empty">Adicione uma ou mais imagens (painel Camadas) para começar.</div>}
-
-      {meta && <canvas ref={canvasRef} className="raster" />}
-
-      {meta && (
-        // O SVG cobre o contêiner e a transformação fica DENTRO dele: o navegador redesenha o vetor
-        // na resolução nativa a cada zoom (sem esticar bitmap).
-        <svg className="overlay">
-          <g
-            transform={`translate(${vp.tx} ${vp.ty}) scale(${vp.scale})`}
-            style={{ display: p.showStrokes ? undefined : 'none' }}
-          >
-            {strokes.map((s) => {
-              const color = organColor(s.organ)
-              const selected = s.id === p.selectedId
-              const pts = s.points.map((q) => q.join(',')).join(' ')
-              return (
-                <g key={s.id}>
-                  <polyline
-                    points={pts}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth={lineW}
-                    strokeLinejoin="miter"
-                    strokeLinecap="butt"
-                  />
-                  {/* área de clique mais larga e invisível */}
-                  <polyline
-                    points={pts}
-                    fill="none"
-                    stroke="transparent"
-                    strokeWidth={12}
-                    vectorEffect="non-scaling-stroke"
-                    style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none' }}
-                    onPointerDown={(e) => {
-                      if (tool !== 'select' || e.button !== 0) return
-                      e.stopPropagation()
-                      p.onSelect(s.id)
-                    }}
-                  />
-                  {(selected || tool === 'select') &&
-                    s.points.map((q, i) => (
-                      <circle
-                        key={i}
-                        cx={q[0]}
-                        cy={q[1]}
-                        r={i === 0 ? r * 1.6 : r}
-                        fill={i === 0 ? color : selected ? '#fff' : 'rgba(255,255,255,.5)'}
-                        stroke={color}
-                        strokeWidth={1}
-                        vectorEffect="non-scaling-stroke"
-                        style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: 'move' }}
-                        onPointerDown={(e) => startVertexDrag(e, s.id, i)}
-                        onContextMenu={(e) => removeVertex(e, s.id, i)}
-                      />
-                    ))}
-                </g>
-              )
-            })}
-
-            {free.length > 1 && (
-              <polyline
-                points={free.map((q) => q.join(',')).join(' ')}
-                fill="none"
-                stroke={organColor(organ)}
-                strokeWidth={lineW}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                style={{ pointerEvents: 'none' }}
-              />
-            )}
-
-            {draft.length > 0 && (
-              <g style={{ pointerEvents: 'none' }}>
-                <polyline
-                  points={draft.map((q) => q.join(',')).join(' ')}
-                  fill="none"
-                  stroke={organColor(organ)}
-                  strokeWidth={lineW}
-                  strokeLinejoin="miter"
-                  strokeLinecap="butt"
-                />
-                {cursor && (
-                  <line
-                    x1={draft[draft.length - 1][0]}
-                    y1={draft[draft.length - 1][1]}
-                    x2={cursor[0]}
-                    y2={cursor[1]}
-                    stroke={organColor(organ)}
-                    strokeDasharray="4 4"
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {draft.map((q, i) => (
-                  <circle key={i} cx={q[0]} cy={q[1]} r={i === 0 ? r * 1.6 : r} fill={organColor(organ)} />
-                ))}
-              </g>
-            )}
-          </g>
-        </svg>
-      )}
+      {meta && <canvas ref={rasterRef} className="raster" />}
+      {meta && <canvas ref={overlayRef} className="overlay" />}
 
       {draft.length > 0 && (
         <div className="draft-hint">

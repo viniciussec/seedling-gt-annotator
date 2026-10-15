@@ -6,8 +6,8 @@ interface Props {
   setTool: (t: Tool) => void
   organ: Organ
   setOrgan: (o: Organ) => void
-  simplifyTol: number
-  setSimplifyTol: (v: number) => void
+  eraserRadius: number
+  setEraserRadius: (v: number) => void
   seedlingId: number | null
   setSeedlingId: (n: number | null) => void
   minVisible: boolean
@@ -22,12 +22,14 @@ interface Props {
   onActualSize: () => void
   onImportGt: (f: File) => void
   onExport: () => void
+  onExportMasks: () => void
 }
 
 const TOOLS: { key: Tool; label: string; hotkey: string }[] = [
   { key: 'freehand', label: 'Mão livre', hotkey: 'H' },
   { key: 'draw', label: 'Pontos', hotkey: 'D' },
-  { key: 'select', label: 'Editar', hotkey: 'S' },
+  { key: 'erase', label: 'Borracha', hotkey: 'E' },
+  { key: 'select', label: 'Selecionar', hotkey: 'S' },
   { key: 'pan', label: 'Mover', hotkey: 'M' },
 ]
 
@@ -59,12 +61,19 @@ export default function Toolbar(p: Props) {
           <button disabled={!p.canExport} onClick={p.onExport}>
             Exportar GT
           </button>
+          <button
+            disabled={!p.canExport}
+            onClick={p.onExportMasks}
+            title="Um PNG por órgão (esqueleto = 255, fundo = 0), do tamanho da imagem de referência"
+          >
+            Exportar máscaras PNG
+          </button>
         </div>
       </section>
 
       <section>
         <h3>Ferramenta</h3>
-        <div className="row">
+        <div className="row wrap">
           {TOOLS.map((t) => (
             <button key={t.key} className={p.tool === t.key ? 'active' : ''} onClick={() => p.setTool(t.key)}>
               {t.label} <kbd>{t.hotkey}</kbd>
@@ -72,6 +81,21 @@ export default function Toolbar(p: Props) {
           ))}
         </div>
       </section>
+
+      {p.tool === 'erase' && (
+        <section>
+          <label className="row" title="Raio da borracha, em pixels da imagem">
+            <span>Raio da borracha (px)</span>
+            <input
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={p.eraserRadius}
+              onChange={(e) => p.setEraserRadius(Math.max(0.5, Number(e.target.value) || 0.5))}
+            />
+          </label>
+        </section>
+      )}
 
       <section>
         <h3>Novo traço</h3>
@@ -87,16 +111,6 @@ export default function Toolbar(p: Props) {
             </button>
           ))}
         </div>
-        <label className="row" title="Tolerância da simplificação do traço à mão livre, em pixels da imagem. 0 mantém todos os pontos.">
-          <span>Simplificação (px)</span>
-          <input
-            type="number"
-            min={0}
-            step={0.1}
-            value={p.simplifyTol}
-            onChange={(e) => p.setSimplifyTol(Math.max(0, Number(e.target.value) || 0))}
-          />
-        </label>
         <label className="row">
           <span>ID da plântula</span>
           <input
@@ -127,10 +141,10 @@ export default function Toolbar(p: Props) {
         </div>
         <label className="row check">
           <input type="checkbox" checked={p.minVisible} onChange={(e) => p.setMinVisible(e.target.checked)} />
-          <span>Linha visível em zoom baixo (só visual)</span>
+          <span>Pixel visível em zoom baixo (só visual)</span>
         </label>
         <p className="muted small">
-          O traço é desenhado com 1 pixel da imagem; abaixo de 100% de zoom ele fica mais fino que um pixel de tela.
+          O traço é gravado em pixels da imagem (cadeia fina, 8-conexa). Abaixo de 100% de zoom cada pixel fica menor que um pixel de tela; a opção acima só o engrossa na exibição.
         </p>
         <p className="muted small">
           Roda do mouse: zoom · Arrastar com <kbd>Espaço</kbd>, botão do meio ou ferramenta Mover: mover a imagem.

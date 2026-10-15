@@ -1,50 +1,87 @@
-import type { Point } from '../types'
+import type { Pixel, Point } from '../types'
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export const dist = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
-/** Comprimento da polilinha em pixels (soma dos segmentos). */
+/** Comprimento de uma polilinha (soma dos segmentos). */
 export function polylineLength(pts: Point[]): number {
   let total = 0
   for (let i = 1; i < pts.length; i++) total += dist(pts[i - 1], pts[i])
   return total
 }
 
-/** Distância de um ponto a um segmento. */
-export function distToSegment(p: Point, a: Point, b: Point): number {
-  const dx = b[0] - a[0]
-  const dy = b[1] - a[1]
-  const len2 = dx * dx + dy * dy
-  if (len2 === 0) return dist(p, a)
-  const t = clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2, 0, 1)
-  return dist(p, [a[0] + t * dx, a[1] + t * dy])
+/** Pixel da imagem que contém a posição contínua `p` (limitado ao tamanho da imagem). */
+export const pixelOf = (p: Point, w: number, h: number): Pixel => [
+  clamp(Math.floor(p[0]), 0, w - 1),
+  clamp(Math.floor(p[1]), 0, h - 1),
+]
+
+/** Linha de Bresenham entre dois pixels, incluindo ambos. */
+export function bresenham(a: Pixel, b: Pixel): Pixel[] {
+  const out: Pixel[] = []
+  let [x, y] = a
+  const dx = Math.abs(b[0] - x)
+  const dy = -Math.abs(b[1] - y)
+  const sx = x < b[0] ? 1 : -1
+  const sy = y < b[1] ? 1 : -1
+  let err = dx + dy
+  for (;;) {
+    out.push([x, y])
+    if (x === b[0] && y === b[1]) break
+    const e2 = 2 * err
+    if (e2 >= dy) {
+      err += dy
+      x += sx
+    }
+    if (e2 <= dx) {
+      err += dx
+      y += sy
+    }
+  }
+  return out
 }
 
 /**
- * Ramer–Douglas–Peucker (iterativo): remove pontos que desviam menos que `tol` (px da imagem)
- * da reta entre vizinhos mantidos. Com tol = 0 devolve a entrada sem alterar.
+ * Acrescenta um pixel a uma cadeia mantendo-a 8-conexa e "fina": ignora repetição, desfaz retorno
+ * sobre o pixel anterior e remove o pixel de quina quando o anterior-do-anterior já é vizinho (8)
+ * do novo. É o mesmo critério que separa uma linha de 1 pixel de uma "escada" de 4-vizinhos.
  */
-export function simplifyRdp(pts: Point[], tol: number): Point[] {
-  if (tol <= 0 || pts.length < 3) return pts
-  const keep = new Uint8Array(pts.length)
-  keep[0] = keep[pts.length - 1] = 1
-  const stack: [number, number][] = [[0, pts.length - 1]]
-  while (stack.length) {
-    const [a, b] = stack.pop()!
-    let maxD = 0
-    let idx = -1
-    for (let i = a + 1; i < b; i++) {
-      const d = distToSegment(pts[i], pts[a], pts[b])
-      if (d > maxD) {
-        maxD = d
-        idx = i
-      }
+export function appendPixel(chain: Pixel[], p: Pixel): void {
+  const n = chain.length
+  if (n > 0 && chain[n - 1][0] === p[0] && chain[n - 1][1] === p[1]) return
+  if (n >= 2) {
+    const a = chain[n - 2]
+    if (a[0] === p[0] && a[1] === p[1]) {
+      chain.pop()
+      return
     }
-    if (idx > 0 && maxD > tol) {
-      keep[idx] = 1
-      stack.push([a, idx], [idx, b])
+    if (Math.max(Math.abs(a[0] - p[0]), Math.abs(a[1] - p[1])) <= 1) {
+      chain[n - 1] = p
+      return
     }
   }
-  return pts.filter((_, i) => keep[i] === 1)
+  chain.push(p)
+}
+
+/** Rasteriza uma polilinha (pontos na imagem) em uma cadeia de pixels 8-conexa e fina. */
+export function rasterizePolyline(pts: Point[], w: number, h: number): Pixel[] {
+  if (pts.length === 0) return []
+  let last = pixelOf(pts[0], w, h)
+  const chain: Pixel[] = [last]
+  for (let i = 1; i < pts.length; i++) {
+    const next = pixelOf(pts[i], w, h)
+    for (const px of bresenham(last, next).slice(1)) appendPixel(chain, px)
+    last = next
+  }
+  return chain
+}
+
+/** Comprimento da cadeia de pixels (código de Freeman): 1 por passo ortogonal, √2 por diagonal. */
+export function chainLength(pixels: Pixel[]): number {
+  let total = 0
+  for (let i = 1; i < pixels.length; i++) {
+    total += pixels[i][0] !== pixels[i - 1][0] && pixels[i][1] !== pixels[i - 1][1] ? Math.SQRT2 : 1
+  }
+  return total
 }
