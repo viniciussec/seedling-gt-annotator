@@ -55,10 +55,26 @@ export default function App() {
   const [tool, setTool] = useState<Tool>('freehand')
   const [organ, setOrgan] = useState<Organ>('hipocotilo')
   const [seedlingId, setSeedlingId] = useState<number | null>(1)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [cursor, setCursor] = useState<Point | null>(null)
   const [eraserRadius, setEraserRadius] = useState(2)
   const [minVisible, setMinVisible] = useState(true)
+  // Iteração automática do ID: ao voltar de Raiz para Hipocótilo (fluxo hipocótilo → raiz → próxima plântula).
+  const [autoId, setAutoIdState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('gt-annotator:autoId') !== '0'
+    } catch {
+      return true
+    }
+  })
+  const setAutoId = (v: boolean) => {
+    setAutoIdState(v)
+    try {
+      localStorage.setItem('gt-annotator:autoId', v ? '1' : '0')
+    } catch {
+      /* ignora */
+    }
+  }
   const [notice, setNotice] = useState<string | null>(null)
 
   // A camada de referência define o tamanho da imagem e o sistema de coordenadas do GT.
@@ -116,7 +132,7 @@ export default function App() {
     if (wasEmpty) {
       const first = loaded[0]
       setRefId(first.id)
-      setSelectedId(null)
+      setSelectedIds([])
       const draft = loadDraft({ name: first.name, width: first.width, height: first.height })
       dispatch({ type: 'reset', strokes: draft ?? [] })
       if (draft?.length) msg = `Rascunho restaurado (${draft.length} traços).`
@@ -158,7 +174,7 @@ export default function App() {
     setLayers(rest)
     if (rest.length === 0) {
       setRefId(null)
-      setSelectedId(null)
+      setSelectedIds([])
       dispatch({ type: 'reset', strokes: [] })
     } else if ((current.find((l) => l.id === refId) ?? current[0])?.id === id) {
       setRefId(rest[0].id)
@@ -184,18 +200,46 @@ export default function App() {
           ? `Atenção: o GT foi feito para ${gt.image.width}×${gt.image.height}, mas a imagem aberta é ${meta?.width}×${meta?.height}.`
           : null
       dispatch({ type: 'reset', strokes: gt.strokes })
-      setSelectedId(null)
+      setSelectedIds([])
       setNotice(mismatch ?? `GT importado (${gt.strokes.length} traços).`)
     } catch (e) {
       setNotice((e as Error).message)
     }
   }
 
-  // --- operações sobre traços ---
-  const deleteStroke = (id: string) => {
-    dispatch({ type: 'commit', strokes: doc.strokes.filter((s) => s.id !== id) })
-    if (selectedId === id) setSelectedId(null)
+  /**
+   * Troca o órgão. Com a iteração automática ligada, voltar de Raiz para Hipocótilo avança o ID da plântula,
+   * mas só se já existe um traço de raiz com o ID atual (evita avançar ao apenas "olhar" a ferramenta Raiz).
+   */
+  const changeOrgan = (next: Organ) => {
+    if (
+      autoId &&
+      organ === 'raiz' &&
+      next === 'hipocotilo' &&
+      seedlingId !== null &&
+      doc.strokes.some((s) => s.organ === 'raiz' && s.seedling_id === seedlingId)
+    ) {
+      setSeedlingId(seedlingId + 1)
+    }
+    setOrgan(next)
   }
+
+  // --- operações sobre traços ---
+  const deleteStrokes = (ids: string[]) => {
+    if (ids.length === 0) return
+    const drop = new Set(ids)
+    dispatch({ type: 'commit', strokes: doc.strokes.filter((s) => !drop.has(s.id)) })
+    setSelectedIds((cur) => cur.filter((id) => !drop.has(id)))
+  }
+  const deleteStroke = (id: string) => deleteStrokes([id])
+
+  // Mantém a seleção coerente quando traços somem (apagar, desfazer, importar...).
+  useEffect(() => {
+    setSelectedIds((cur) => {
+      const alive = cur.filter((id) => doc.strokes.some((s) => s.id === id))
+      return alive.length === cur.length ? cur : alive
+    })
+  }, [doc.strokes])
   const changeSeedling = (id: string, sid: number | null) =>
     dispatch({
       type: 'commit',
@@ -222,8 +266,8 @@ export default function App() {
         else if (k === 's') setTool('select')
         else if (k === 'm') setTool('pan')
         else if (k === 'f') fitToView()
-        else if ((k === 'delete' || k === 'del') && selectedId) deleteStroke(selectedId)
-        else ORGANS.forEach((o) => o.hotkey === k && setOrgan(o.key))
+        else if ((k === 'delete' || k === 'del') && selectedIds.length > 0) deleteStrokes(selectedIds)
+        else ORGANS.forEach((o) => o.hotkey === k && changeOrgan(o.key))
       }
     }
     window.addEventListener('keydown', onKey)
@@ -256,7 +300,9 @@ export default function App() {
           tool={tool}
           setTool={setTool}
           organ={organ}
-          setOrgan={setOrgan}
+          setOrgan={changeOrgan}
+          autoId={autoId}
+          setAutoId={setAutoId}
           eraserRadius={eraserRadius}
           setEraserRadius={setEraserRadius}
           seedlingId={seedlingId}
@@ -275,14 +321,20 @@ export default function App() {
           onExport={() => meta && exportGt(meta, doc.strokes)}
           onExportMasks={() => meta && exportMasks(meta, doc.strokes)}
         />
-        <h3>Traços ({doc.strokes.length})</h3>
+        <h3>
+          Traços ({doc.strokes.length})
+          {selectedIds.length > 0 && <span className="sel-count"> · {selectedIds.length} selecionado(s)</span>}
+        </h3>
         <StrokeList
           strokes={doc.strokes}
-          selectedId={selectedId}
-          onSelect={(id) => {
-            setSelectedId(id)
+          selectedIds={selectedIds}
+          onSelect={(id, additive) => {
+            setSelectedIds((cur) =>
+              additive ? (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]) : [id],
+            )
             setTool('select')
           }}
+          onSelectIds={setSelectedIds}
           onDelete={deleteStroke}
           onChangeSeedling={changeSeedling}
         />
@@ -303,8 +355,8 @@ export default function App() {
           seedlingId={seedlingId}
           eraserRadius={eraserRadius}
           minVisible={minVisible}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
+          selectedIds={selectedIds}
+          onSelect={setSelectedIds}
           onCommit={(strokes) => {
             setShowStrokes(true)
             dispatch({ type: 'commit', strokes })

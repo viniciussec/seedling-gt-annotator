@@ -19,8 +19,8 @@ interface Props {
   seedlingId: number | null
   eraserRadius: number
   minVisible: boolean
-  selectedId: string | null
-  onSelect: (id: string | null) => void
+  selectedIds: string[]
+  onSelect: (ids: string[]) => void
   onCommit: (strokes: Stroke[]) => void
   onSet: (strokes: Stroke[]) => void
   onCheckpoint: () => void
@@ -43,6 +43,7 @@ const capture = (el: Element, id: number) => {
 
 const CLICK_TOLERANCE_PX = 4 // acima disso o gesto é um arraste, não um clique
 const SELECT_RADIUS_PX = 8 // raio (em px de tela) para selecionar um traço clicando perto dele
+const DIM_ALPHA = 0.35 // traços não selecionados ficam esmaecidos quando há seleção
 
 /**
  * Apaga os pixels que estão a até `r` (px da imagem) de algum dos `centers`. Traços cortados ao meio
@@ -79,6 +80,7 @@ export default function Viewer(p: Props) {
   const [spaceDown, setSpaceDown] = useState(false)
   const [panningNow, setPanningNow] = useState(false)
   const [size, setSize] = useState({ w: 0, h: 0 })
+  const [marquee, setMarquee] = useState<{ a: Point; b: Point } | null>(null) // retângulo de seleção (coords da imagem)
 
   const rasterRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
@@ -87,6 +89,7 @@ export default function Viewer(p: Props) {
   const clickRef = useRef<{ x: number; y: number } | null>(null)
   const freeRef = useRef<{ chain: Pixel[]; last: Point; len: number } | null>(null)
   const eraseRef = useRef<{ last: Point; started: boolean } | null>(null)
+  const marqueeRef = useRef<{ start: Point; cx: number; cy: number; additive: boolean; active: boolean } | null>(null)
   // Traços mais recentes, de forma síncrona: movimentos seguidos da borracha (antes de re-renderizar) acumulam.
   const strokesRef = useRef(strokes)
   strokesRef.current = strokes
@@ -159,10 +162,16 @@ export default function Viewer(p: Props) {
     }
 
     if (p.showStrokes) {
+      const sel = new Set(p.selectedIds)
+      const dim = sel.size > 0 // com seleção, o resto fica esmaecido para destacar o que foi escolhido
       for (const st of strokes) {
-        if (st.id === p.selectedId) paint(st.pixels, '#ffffff', Math.max(1.5, s * 0.35)) // contorno de seleção
+        if (sel.has(st.id)) paint(st.pixels, '#ffffff', Math.max(1.5, s * 0.35)) // contorno (halo) de seleção
       }
-      for (const st of strokes) paint(st.pixels, organColor(st.organ))
+      for (const st of strokes) {
+        ctx.globalAlpha = dim && !sel.has(st.id) ? DIM_ALPHA : 1
+        paint(st.pixels, organColor(st.organ))
+      }
+      ctx.globalAlpha = 1
     }
 
     const color = organColor(organ)
@@ -190,6 +199,20 @@ export default function Viewer(p: Props) {
       }
     }
 
+    if (marquee) {
+      const x0 = vp.tx + Math.min(marquee.a[0], marquee.b[0]) * s
+      const y0 = vp.ty + Math.min(marquee.a[1], marquee.b[1]) * s
+      const w = Math.abs(marquee.b[0] - marquee.a[0]) * s
+      const h = Math.abs(marquee.b[1] - marquee.a[1]) * s
+      ctx.fillStyle = 'rgba(79, 156, 255, .18)'
+      ctx.fillRect(x0, y0, w, h)
+      ctx.strokeStyle = '#4f9cff'
+      ctx.lineWidth = 1
+      ctx.setLineDash([5, 4])
+      ctx.strokeRect(x0 + 0.5, y0 + 0.5, w, h)
+      ctx.setLineDash([])
+    }
+
     if (tool === 'erase' && cursor) {
       ctx.strokeStyle = '#fff'
       ctx.lineWidth = 1
@@ -197,7 +220,7 @@ export default function Viewer(p: Props) {
       ctx.arc(vp.tx + cursor[0] * s, vp.ty + cursor[1] * s, Math.max(2, p.eraserRadius * s), 0, Math.PI * 2)
       ctx.stroke()
     }
-  }, [size, vp, meta?.width, meta?.height, strokes, p.selectedId, p.showStrokes, p.minVisible, free, draft, cursor, tool, organ, p.eraserRadius]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [size, vp, meta?.width, meta?.height, strokes, p.selectedIds, p.showStrokes, p.minVisible, free, draft, cursor, tool, organ, p.eraserRadius, marquee]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- zoom com a roda (listener não-passivo para poder chamar preventDefault) ---
   useEffect(() => {
@@ -218,6 +241,8 @@ export default function Viewer(p: Props) {
     setDraft([])
     resetFree()
     eraseRef.current = null
+    marqueeRef.current = null
+    setMarquee(null)
   }, [tool, meta?.name, meta?.width, meta?.height]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const commitPixels = (pixels: Pixel[]) => {
@@ -244,7 +269,9 @@ export default function Viewer(p: Props) {
       else if (e.key === 'Escape') {
         setDraft([])
         resetFree()
-        p.onSelect(null)
+        marqueeRef.current = null
+        setMarquee(null)
+        p.onSelect([])
       } else if (e.key === 'Backspace' && tool === 'draw' && draft.length > 0) {
         e.preventDefault()
         setDraft((d) => d.slice(0, -1))
@@ -280,12 +307,14 @@ export default function Viewer(p: Props) {
       eraseRef.current.started = true
       p.onCheckpoint() // um único passo de "desfazer" para todo o gesto da borracha
     }
-    if (p.selectedId && !next.some((s) => s.id === p.selectedId)) p.onSelect(null)
+    if (p.selectedIds.some((id) => !next.some((s) => s.id === id))) {
+      p.onSelect(p.selectedIds.filter((id) => next.some((s) => s.id === id)))
+    }
     p.onSet(next)
   }
 
-  /** Seleciona o traço com pixel mais próximo do ponto (dentro do raio de seleção). */
-  const selectAt = (ip: Point) => {
+  /** Traço com o pixel mais próximo do ponto (dentro do raio de seleção), ou null. */
+  const strokeAt = (ip: Point): string | null => {
     const maxD = Math.max(1, SELECT_RADIUS_PX / vp.scale)
     let best: { id: string; d: number } | null = null
     for (const s of strokes) {
@@ -294,8 +323,23 @@ export default function Viewer(p: Props) {
         if (d <= maxD && (!best || d < best.d)) best = { id: s.id, d }
       }
     }
-    p.onSelect(best ? best.id : null)
+    return best ? best.id : null
   }
+
+  /** Traços com ao menos um pixel (pelo centro) dentro do retângulo. */
+  const strokesInRect = (a: Point, b: Point): string[] => {
+    const x0 = Math.min(a[0], b[0])
+    const x1 = Math.max(a[0], b[0])
+    const y0 = Math.min(a[1], b[1])
+    const y1 = Math.max(a[1], b[1])
+    return strokes
+      .filter((s) => s.pixels.some(([x, y]) => x + 0.5 >= x0 && x + 0.5 <= x1 && y + 0.5 >= y0 && y + 0.5 <= y1))
+      .map((s) => s.id)
+  }
+
+  /** Aplica uma seleção: com `additive` (Shift/Ctrl/⌘) soma à atual; senão substitui. */
+  const applySelection = (ids: string[], additive: boolean) =>
+    p.onSelect(additive ? [...p.selectedIds, ...ids.filter((id) => !p.selectedIds.includes(id))] : ids)
 
   // --- ponteiro ---
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -323,7 +367,14 @@ export default function Viewer(p: Props) {
       capture(e.currentTarget, e.pointerId)
       eraseAlong(ip, ip)
     } else if (tool === 'select') {
-      selectAt(ip)
+      marqueeRef.current = {
+        start: ip,
+        cx: e.clientX,
+        cy: e.clientY,
+        additive: e.shiftKey || e.ctrlKey || e.metaKey,
+        active: false,
+      }
+      capture(e.currentTarget, e.pointerId)
     }
   }
 
@@ -358,6 +409,13 @@ export default function Viewer(p: Props) {
       return
     }
 
+    const mq = marqueeRef.current
+    if (mq) {
+      if (!mq.active && Math.hypot(e.clientX - mq.cx, e.clientY - mq.cy) > CLICK_TOLERANCE_PX) mq.active = true
+      if (mq.active) setMarquee({ a: mq.start, b: ip })
+      return
+    }
+
     const er = eraseRef.current
     if (er) {
       eraseAlong(er.last, ip)
@@ -371,6 +429,26 @@ export default function Viewer(p: Props) {
       setPanningNow(false)
     }
     eraseRef.current = null
+
+    const mq = marqueeRef.current
+    if (mq) {
+      marqueeRef.current = null
+      setMarquee(null)
+      const end = toImage(e)
+      if (mq.active) {
+        applySelection(strokesInRect(mq.start, end), mq.additive) // arrastou: seleciona a área
+      } else {
+        const id = strokeAt(mq.start) // clique simples: traço mais próximo
+        if (id === null) {
+          if (!mq.additive) p.onSelect([])
+        } else if (mq.additive) {
+          p.onSelect(p.selectedIds.includes(id) ? p.selectedIds.filter((x) => x !== id) : [...p.selectedIds, id])
+        } else {
+          p.onSelect([id])
+        }
+      }
+      return
+    }
 
     const f = freeRef.current
     if (f) {

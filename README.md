@@ -20,11 +20,14 @@ npm run build      # checagem de tipos + build de produção
    Cada camada tem **visibilidade**, **opacidade** e **ordem** (arraste a alça ⋮⋮ ou use ▲▼); a do topo da lista fica por cima. Os traços do GT ficam sempre acima das imagens e também podem ser ocultados.
    A camada marcada **ref** define o tamanho e as coordenadas do GT (a primeira adicionada; troque com ⌖). As demais são ajustadas ao tamanho dela.
 2. Escolha o órgão (**Hipocótilo** `1` / **Raiz** `2`) e o **ID da plântula** (hipocótilo e raiz da mesma plântula usam o mesmo ID).
+   Com a caixa **"Avançar o ID ao voltar de Raiz para Hipocótilo"** marcada (padrão; a escolha é lembrada), o fluxo hipocótilo → raiz → próxima plântula avança o ID sozinho: ao trocar de Raiz para Hipocótilo, o ID soma 1 — mas só se já existe um traço de raiz com o ID atual. O botão **+1** continua disponível para pular manualmente (ex.: plântula sem raiz).
 3. **O desenho é em pixels**, não vetorial: cada traço é gravado como uma **cadeia de pixels inteiros, 8-conexa e fina** (sem pixels de "quina" redundantes), a mesma natureza da saída de `skeletonize`/`medial_axis`. Na tela, cada pixel do traço é pintado como um pixel da imagem.
    - **Mão livre** (`H`, padrão): segure e arraste; pontos consecutivos são ligados por Bresenham.
    - **Pontos** (`D`): clique para marcar vértices (ligados por Bresenham); **Enter** ou duplo clique finaliza, **Backspace** remove o último, **Esc** cancela.
    - **Borracha** (`E`): apaga pixels dentro do raio configurado; um traço cortado ao meio vira dois.
-   - **Selecionar** (`S`): clique perto de um traço para selecioná-lo; **Delete** o exclui.
+   - **Selecionar** (`S`): **arraste um retângulo** para selecionar todos os traços que têm pixels dentro dele, ou clique perto de um traço para selecioná-lo. **Shift/Ctrl** soma à seleção atual; **Delete** exclui os selecionados; **Esc** limpa.
+     Os selecionados ganham contorno branco na imagem (os demais ficam esmaecidos) e destaque na lista, que rola até eles.
+     O seletor **Destacar plântula** (acima da lista) lista todos os IDs existentes: escolher um ID seleciona e destaca todos os traços dele (e o seletor mostra o ID quando a seleção é exatamente "todos os traços daquele ID").
    - **Mover** (`M`), **Espaço** ou botão do meio: mover a imagem. Roda do mouse: zoom. `F` ajusta à janela.
 4. **Ctrl+Z / Ctrl+Shift+Z** desfazem/refazem. Um rascunho é salvo no `localStorage` por imagem.
 5. **Exportar GT** gera `<imagem>.gt.json`; **Exportar máscaras PNG** gera `<imagem>.gt.hipocotilo.png` e `<imagem>.gt.raiz.png`; **Importar GT** reabre um JSON (também aceita o formato antigo, vetorial, que é convertido para pixels).

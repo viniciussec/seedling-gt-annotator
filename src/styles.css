@@ -81,7 +81,6 @@ kbd {
   font-size: 13px;
 }
 .stroke-list li:hover { background: var(--panel-2); }
-.stroke-list li.selected { border-color: var(--accent); background: var(--panel-2); }
 .grow { flex: 1; }
 
 .main { display: grid; grid-template-rows: 1fr auto; min-width: 0; }
@@ -99,7 +98,6 @@ kbd {
   display: grid; place-items: center;
   color: var(--muted);
 }
-img
 .draft-hint {
   position: absolute; left: 12px; bottom: 12px;
   background: rgba(0, 0, 0, .65);
@@ -149,3 +147,12 @@ img
 .opacity input { flex: 1; min-width: 40px; }
 .opacity small { color: var(--muted); width: 32px; text-align: right; }
 .layer-row .actions { display: flex; gap: 2px; flex: none; }
+
+/* Seleção */
+.stroke-list li.selected { border-color: #fff; background: rgba(79, 156, 255, .28); box-shadow: inset 3px 0 0 var(--accent); }
+.sel-count { color: var(--accent); text-transform: none; letter-spacing: 0; font-weight: 600; }
+select {
+  flex: 1; min-width: 0;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; font-size: 12.5px;
+}

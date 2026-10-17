@@ -6,6 +6,8 @@ interface Props {
   setTool: (t: Tool) => void
   organ: Organ
   setOrgan: (o: Organ) => void
+  autoId: boolean
+  setAutoId: (v: boolean) => void
   eraserRadius: number
   setEraserRadius: (v: number) => void
   seedlingId: number | null
@@ -80,6 +82,12 @@ export default function Toolbar(p: Props) {
             </button>
           ))}
         </div>
+        {p.tool === 'select' && (
+          <p className="muted small">
+            Arraste para selecionar tudo dentro do retângulo (traços que tocam a área) · clique perto de um traço para
+            selecioná-lo · <kbd>Shift</kbd>/<kbd>Ctrl</kbd> soma à seleção · <kbd>Delete</kbd> exclui · <kbd>Esc</kbd> limpa.
+          </p>
+        )}
       </section>
 
       {p.tool === 'erase' && (
@@ -122,6 +130,13 @@ export default function Toolbar(p: Props) {
           <button onClick={() => p.setSeedlingId((p.seedlingId ?? 0) + 1)} title="Próxima plântula">
             +1
           </button>
+        </label>
+        <label
+          className="row check"
+          title="Ao trocar de Raiz para Hipocótilo (depois de desenhar a raiz da plântula atual), o ID avança em 1."
+        >
+          <input type="checkbox" checked={p.autoId} onChange={(e) => p.setAutoId(e.target.checked)} />
+          <span>Avançar o ID ao voltar de Raiz para Hipocótilo</span>
         </label>
       </section>
 
