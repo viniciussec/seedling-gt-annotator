@@ -11,6 +11,7 @@ export interface Stroke {
   /**
    * Esqueleto desenhado, como cadeia ordenada de pixels inteiros, 8-conexa e sem pixels redundantes
    * (mesma natureza da saída dos algoritmos de esqueletização). Ordem: do colo para o ápice (a definir no protocolo).
+   * Exceção: ao agrupar sem "ligar lacunas", pedaços fundidos podem deixar lacunas (a cadeia deixa de ser contígua).
    */
   pixels: Pixel[]
 }

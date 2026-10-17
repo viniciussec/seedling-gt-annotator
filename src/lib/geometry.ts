@@ -77,11 +77,14 @@ export function rasterizePolyline(pts: Point[], w: number, h: number): Pixel[] {
   return chain
 }
 
-/** Comprimento da cadeia de pixels (código de Freeman): 1 por passo ortogonal, √2 por diagonal. */
+/**
+ * Comprimento da cadeia de pixels: soma das distâncias entre pixels consecutivos. Em cadeia 8-conexa isso é o código
+ * de Freeman (1 por passo ortogonal, √2 por diagonal); em lacunas (traços fundidos sem ligação) conta a distância reta.
+ */
 export function chainLength(pixels: Pixel[]): number {
   let total = 0
   for (let i = 1; i < pixels.length; i++) {
-    total += pixels[i][0] !== pixels[i - 1][0] && pixels[i][1] !== pixels[i - 1][1] ? Math.SQRT2 : 1
+    total += Math.hypot(pixels[i][0] - pixels[i - 1][0], pixels[i][1] - pixels[i - 1][1])
   }
   return total
 }

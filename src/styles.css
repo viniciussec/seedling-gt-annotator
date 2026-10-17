@@ -156,3 +156,9 @@ select {
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; font-size: 12.5px;
 }
+
+/* Agrupar selecionados */
+.group-panel { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: rgba(79, 156, 255, .08); }
+.group-panel .row { margin: 0; flex-wrap: wrap; }
+.group-panel .warn { color: #ffcf66; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }

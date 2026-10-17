@@ -3,6 +3,8 @@ import Viewer from './components/Viewer'
 import Toolbar from './components/Toolbar'
 import StrokeList from './components/StrokeList'
 import LayerPanel from './components/LayerPanel'
+import GroupPanel from './components/GroupPanel'
+import { mergeStrokes } from './lib/merge'
 import { useViewport } from './hooks/useViewport'
 import { docReducer, initialDoc } from './state/docReducer'
 import { exportGt, exportMasks, loadDraft, parseGt, saveDraft } from './lib/io'
@@ -56,6 +58,8 @@ export default function App() {
   const [organ, setOrgan] = useState<Organ>('hipocotilo')
   const [seedlingId, setSeedlingId] = useState<number | null>(1)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [groupId, setGroupId] = useState<number | null>(null) // ID de destino do agrupamento
+  const [bridgeGaps, setBridgeGaps] = useState(false) // ao fundir, ligar lacunas entre pedaços com linha reta
   const [cursor, setCursor] = useState<Point | null>(null)
   const [eraserRadius, setEraserRadius] = useState(2)
   const [minVisible, setMinVisible] = useState(true)
@@ -240,6 +244,54 @@ export default function App() {
       return alive.length === cur.length ? cur : alive
     })
   }, [doc.strokes])
+
+  /** Próximo ID livre (maior ID existente + 1). */
+  const nextFreeId = useMemo(
+    () => Math.max(0, ...doc.strokes.map((s) => s.seedling_id ?? 0)) + 1,
+    [doc.strokes],
+  )
+
+  // Ao mudar a seleção, sugere o ID de destino: o menor ID já presente entre os selecionados
+  // (reaproveita uma plântula existente) ou, se nenhum tem ID, o próximo livre.
+  const selectionKey = selectedIds.join(',')
+  useEffect(() => {
+    if (selectedIds.length === 0) return
+    const ids = doc.strokes
+      .filter((s) => selectedIds.includes(s.id) && s.seedling_id !== null)
+      .map((s) => s.seedling_id as number)
+    setGroupId(ids.length > 0 ? Math.min(...ids) : nextFreeId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey])
+
+  /**
+   * Agrupa: atribui `groupId` aos selecionados e, em cada órgão (hipocótilo/raiz), funde todos os traços do grupo
+   * em UM só — inclusive traços fora da seleção que já tinham esse ID. Um único passo de desfazer.
+   */
+  const groupSelected = () => {
+    if (groupId === null || selectedIds.length === 0) return
+    const sel = new Set(selectedIds)
+    const members = doc.strokes.filter((s) => sel.has(s.id) || s.seedling_id === groupId)
+    const memberIds = new Set(members.map((s) => s.id))
+    const result: Stroke[] = []
+    let fused = 0
+    for (const o of ORGANS) {
+      const list = members.filter((s) => s.organ === o.key)
+      if (list.length === 0) continue
+      if (list.length === 1) result.push({ ...list[0], seedling_id: groupId })
+      else {
+        result.push(mergeStrokes(list, groupId, bridgeGaps).stroke)
+        fused += list.length - 1
+      }
+    }
+    // os fundidos entram na posição do primeiro membro; o resto da lista é preservado
+    const first = doc.strokes.findIndex((s) => memberIds.has(s.id))
+    const rest = doc.strokes.filter((s) => !memberIds.has(s.id))
+    dispatch({ type: 'commit', strokes: [...rest.slice(0, first), ...result, ...rest.slice(first)] })
+    setSelectedIds(result.map((s) => s.id))
+    setNotice(
+      `Agrupado no ID ${groupId}: ${result.length} traço(s)` + (fused > 0 ? `, ${fused} pedaço(s) fundido(s).` : '.'),
+    )
+  }
   const changeSeedling = (id: string, sid: number | null) =>
     dispatch({
       type: 'commit',
@@ -255,6 +307,9 @@ export default function App() {
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         dispatch({ type: e.shiftKey ? 'redo' : 'undo' })
+      } else if (mod && e.key.toLowerCase() === 'g') {
+        e.preventDefault()
+        groupSelected()
       } else if (mod && e.key.toLowerCase() === 'y') {
         e.preventDefault()
         dispatch({ type: 'redo' })
@@ -325,6 +380,18 @@ export default function App() {
           Traços ({doc.strokes.length})
           {selectedIds.length > 0 && <span className="sel-count"> · {selectedIds.length} selecionado(s)</span>}
         </h3>
+        {selectedIds.length > 0 && (
+          <GroupPanel
+            strokes={doc.strokes}
+            selectedIds={selectedIds}
+            groupId={groupId}
+            setGroupId={setGroupId}
+            nextFreeId={nextFreeId}
+            bridgeGaps={bridgeGaps}
+            setBridgeGaps={setBridgeGaps}
+            onGroup={groupSelected}
+          />
+        )}
         <StrokeList
           strokes={doc.strokes}
           selectedIds={selectedIds}
